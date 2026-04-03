@@ -444,13 +444,17 @@ class JanelaFaturamento(ctkinter.CTkToplevel):
         super().__init__(parent)
         self.title("Relatórios e Performance")
         self.geometry("1000x750")
+        self.after(100, self.grab_set)
         
         self.tabview = ctkinter.CTkTabview(self)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
+
         self.tabview.add("Diário")
+        self.tabview.add("Performance")
         self.tabview.add("Itens Vendidos")
         
         self.renderizar_diario()
+        self.setup_aba_performance()
         self.renderizar_ranking()
 
     def renderizar_diario(self):
@@ -550,10 +554,55 @@ class JanelaFaturamento(ctkinter.CTkToplevel):
                    command=self.exportar_para_excel).pack(pady=5)
 
     def setup_aba_performance(self):
-        aba = self.tabview.tab("Performance (Semanal/Mensal)")
-        ctkinter.CTkLabel(aba, text="Relatórios de Período", font=("Arial", 18)).pack(pady=20)
-        # Aqui no futuro colocaremos a busca por data (Calendário)
-        ctkinter.CTkLabel(aba, text="[Em desenvolvimento: Filtros por Data]").pack()
+        aba = self.tabview.tab("Performance")
+        for w in aba.winfo_children(): w.destroy()
+
+        ctkinter.CTkLabel(aba, text="📊 DESEMPENHO DE VENDAS", font=("Arial", 20, "bold")).pack(pady=10)
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+
+        # 1. Vendas por Dia da Semana (Últimos 30 dias)
+        # 0=Sunday, 6=Saturday no SQLite
+        query_dias = """
+            SELECT strftime('%w', data_pagamento) as dia_semana, SUM(valor) 
+            FROM recebimentos 
+            WHERE data_pagamento >= date('now', '-30 days')
+            GROUP BY dia_semana
+        """
+        cursor.execute(query_dias)
+        vendas_dias = dict(cursor.fetchall())
+        
+        nomes_dias = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"]
+        
+        # Exibição visual simples (Barras de texto ou Cards)
+        frame_performance = ctkinter.CTkFrame(aba)
+        frame_performance.pack(fill="x", padx=20, pady=10)
+
+        for i, nome in enumerate(nomes_dias):
+            valor = vendas_dias.get(str(i), 0)
+            f = ctkinter.CTkFrame(frame_performance, width=80, height=100)
+            f.pack(side="left", expand=True, padx=5, pady=10)
+            ctkinter.CTkLabel(f, text=nome, font=("Arial", 12, "bold")).pack(pady=5)
+            ctkinter.CTkLabel(f, text=f"R${valor:.0f}", font=("Arial", 11)).pack()
+
+        # 2. Resumo Financeiro (Bruto vs Líquido Estimado)
+        cursor.execute("SELECT valor, forma_pagamento FROM recebimentos WHERE data_pagamento >= date('now', '-30 days')")
+        todos_recebimentos = cursor.fetchall()
+        conn.close()
+
+        bruto_total = sum(item[0] for item in todos_recebimentos)
+        liquido_total = sum(self.calcular_liquido(item[0], item[1]) for item in todos_recebimentos)
+        taxas_pagas = bruto_total - liquido_total
+
+        # Painel de Resultados
+        f_resumo = ctkinter.CTkFrame(aba, fg_color="#34495e")
+        f_resumo.pack(fill="x", padx=20, pady=20)
+        
+        ctkinter.CTkLabel(f_resumo, text=f"Faturamento Bruto (30 dias): R$ {bruto_total:.2f}", text_color="white").pack(pady=5)
+        ctkinter.CTkLabel(f_resumo, text=f"Total de Taxas Maquininha: - R$ {taxas_pagas:.2f}", text_color="#e74c3c").pack(pady=5)
+        ctkinter.CTkLabel(f_resumo, text=f"LUCRO LÍQUIDO ESTIMADO: R$ {liquido_total:.2f}", 
+                          font=("Arial", 18, "bold"), text_color="#2ecc71").pack(pady=10)
 
     def setup_aba_ranking(self):
         aba = self.tabview.tab("Itens Mais Vendidos")
@@ -604,6 +653,32 @@ class JanelaFaturamento(ctkinter.CTkToplevel):
             messagebox.showinfo("Sucesso", f"Excel gerado com sucesso: {nome_arquivo}")
         except Exception as e:
             messagebox.showerror("Erro ao exportar", f"Erro: {e}")
+
+    def calcular_liquido(self, valor_bruto, forma_pagamento):
+        """Consulta o banco de taxas e subtrai a comissão da maquininha"""
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        
+        # Mapeia a forma de pagamento para o nome da taxa no banco
+        mapa = {
+            "Dinheiro": None,
+            "PIX": None, # PIX direto costuma ser 0%
+            "Cartão Débito": "Debito_Point",
+            "Cartão Crédito à Vista": "Credito_Point",
+            "PIX Maquininha": "Pix_Point"
+        }
+        
+        tag_taxa = mapa.get(forma_pagamento)
+        if not tag_taxa:
+            conn.close()
+            return valor_bruto # Sem taxas
+        
+        cursor.execute("SELECT porcentagem FROM configuracoes_taxas WHERE nome_taxa=?", (tag_taxa,))
+        res = cursor.fetchone()
+        taxa = res[0] if res else 0
+        conn.close()
+        
+        return valor_bruto * (1 - (taxa / 100))
 
 class JanelaTaxas(ctkinter.CTkToplevel):
     def __init__(self, parent):
