@@ -1,0 +1,716 @@
+import customtkinter as ctkinter
+import os
+import sqlite3
+import pandas as pd
+import shutil
+
+from tkinter import messagebox
+from datetime import datetime
+
+def obter_mesas():
+    conn = sqlite3.connect("lanchonete.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT numero, status FROM mesas ORDER BY numero")
+    dados = cursor.fetchall()
+    conn.close()
+    return dados
+
+def exportar_vendas_excel():
+    try:
+        conn = sqlite3.connect("lanchonete.db")
+        # Query avançada que junta Venda + Cliente + Recebimentos Detalhados
+        query = """
+        SELECT 
+            v.data_hora as 'Data/Hora',
+            m.cliente_nome as 'Cliente',
+            m.cliente_contato as 'WhatsApp',
+            v.id_mesa as 'Mesa',
+            r.forma_pagamento as 'Forma de Pagto',
+            r.valor as 'Valor Recebido',
+            v.valor_total as 'Total da Comanda'
+        FROM vendas v
+        JOIN recebimentos r ON v.id = r.id_venda
+        JOIN mesas m ON v.id_mesa = m.numero
+        ORDER BY v.data_hora DESC
+        """
+        df_completo = pd.read_sql_query(query, conn)
+        conn.close()
+
+        nome_arq = f"Relatorio_Detallhado_{datetime.now().strftime('%d-%m-%Y')}.xlsx"
+        df_completo.to_excel(nome_arq, index=False)
+        messagebox.showinfo("Sucesso", f"Excel Gerado: {nome_arq}")
+    except Exception as e:
+        messagebox.showerror("Erro", f"Erro ao gerar Excel: {e}")
+
+class JanelaMesas(ctkinter.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Gestão de Mesas")
+        self.geometry("1300x850")
+        self.after(100, self.grab_set) 
+
+        self.precos = {
+            "FRT Classico": 25.0, "FRT Bacon": 28.0, "FRT Salada Especial": 32.0,
+            "Frango e Batata Especial": 38.0, "Mega Blend": 48.0,
+            "Coca Cola lata": 6.50, "Fanta Laranja lata": 6.50, 
+            "Pepsi 2 Litros": 14.0, "Suco de Laranja 2 Litros": 16.0
+        }
+        
+        self.categorias_ordem = ["Lanches", "Blends", "Bebidas"]
+        self.itens_por_categoria = {
+            "Lanches": ["FRT Classico", "FRT Bacon", "FRT Salada Especial"],
+            "Blends": ["Frango e Batata Especial", "Mega Blend"],
+            "Bebidas": ["Coca Cola lata", "Fanta Laranja lata", "Pepsi 2 Litros", "Suco de Laranja 2 Litros"]
+        }
+        
+        self.carrinho = {} 
+        self.itens_ja_pedidos = {}
+        self.mesa_atual = None
+        self.labels_qtd = {} 
+
+        self.main_container = ctkinter.CTkFrame(self)
+        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.mostrar_mapa_mesas()
+
+    def mostrar_mapa_mesas(self):
+        for widget in self.main_container.winfo_children(): widget.destroy()
+        self.carrinho = {}
+        ctkinter.CTkLabel(self.main_container, text="📍 MAPA DE MESAS", font=("Arial", 24, "bold")).pack(pady=10)
+        grid_frame = ctkinter.CTkScrollableFrame(self.main_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True)
+
+        for i, (num, status) in enumerate(obter_mesas()):
+            cor = "#2ecc71" if status == 'Livre' else "#f1c40f" if status == 'Ocupada' else "#e74c3c"
+            btn = ctkinter.CTkButton(grid_frame, text=f"MESA {num:02d}\n{status}", 
+                                     fg_color=cor, width=150, height=100, font=("Arial", 13, "bold"),
+                                     command=lambda n=num: self.abrir_detalhes_mesa(n))
+            btn.grid(row=i//6, column=i%6, padx=12, pady=12)
+
+    def abrir_detalhes_mesa(self, num_mesa):
+        self.mesa_atual = num_mesa
+        self.carrinho = {}
+        self.itens_ja_pedidos = {}
+        self.labels_qtd = {}
+        for widget in self.main_container.winfo_children(): widget.destroy()
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT cliente_nome, cliente_contato FROM mesas WHERE numero=?", (num_mesa,))
+        info = cursor.fetchone()
+        cursor.execute("SELECT item_nome, COUNT(item_nome) FROM pedidos WHERE id_mesa=? GROUP BY item_nome", (num_mesa,))
+        for nome, qtd in cursor.fetchall():
+            self.itens_ja_pedidos[nome] = qtd
+        conn.close()
+
+        self.frame_lat = ctkinter.CTkScrollableFrame(self.main_container, width=180, fg_color="#34495e")
+        self.frame_lat.pack(side="left", fill="y")
+        self.frame_central = ctkinter.CTkFrame(self.main_container, fg_color="transparent")
+        self.frame_central.pack(side="left", fill="both", expand=True, padx=10)
+
+        topo = ctkinter.CTkFrame(self.frame_central)
+        topo.pack(fill="x", pady=5)
+        ctkinter.CTkButton(topo, text="⬅ VOLTAR", width=70, command=self.mostrar_mapa_mesas).grid(row=0, column=0, padx=5)
+        self.ent_nome = ctkinter.CTkEntry(topo, placeholder_text="Nome Cliente", width=180)
+        if info and info[0]: self.ent_nome.insert(0, info[0])
+        self.ent_nome.grid(row=0, column=1, padx=5)
+        self.ent_whats = ctkinter.CTkEntry(topo, placeholder_text="WhatsApp", width=140)
+        if info and info[1]: self.ent_whats.insert(0, info[1])
+        self.ent_whats.grid(row=0, column=2, padx=5)
+
+        scroll_c = ctkinter.CTkScrollableFrame(self.frame_central, label_text="CARDÁPIO - ADICIONAR ITENS")
+        scroll_c.pack(fill="both", expand=True, pady=5)
+
+        for cat in self.categorias_ordem:
+            ctkinter.CTkLabel(scroll_c, text=f"--- {cat.upper()} ---", font=("Arial", 14, "bold"), text_color="#3498db").pack(pady=5)
+            for item in self.itens_por_categoria[cat]:
+                preco = self.precos.get(item, 0)
+                f = ctkinter.CTkFrame(scroll_c, fg_color="transparent")
+                f.pack(fill="x", pady=2)
+                ctkinter.CTkLabel(f, text=f"{item} (R${preco:.2f})", width=200, anchor="w").pack(side="left", padx=10)
+                ctkinter.CTkButton(f, text="+", width=30, command=lambda i=item: self.alterar_qtd(i, 1)).pack(side="right", padx=2)
+                lbl_q = ctkinter.CTkLabel(f, text="0", width=30, font=("Arial", 12, "bold"))
+                lbl_q.pack(side="right", padx=5)
+                self.labels_qtd[item] = lbl_q
+                ctkinter.CTkButton(f, text="-", width=30, command=lambda i=item: self.alterar_qtd(i, -1)).pack(side="right", padx=2)
+
+        self.frame_res = ctkinter.CTkFrame(self.main_container, width=300)
+        self.frame_res.pack(side="right", fill="both", padx=5)
+        self.lista_visual = ctkinter.CTkTextbox(self.frame_res, width=280, height=450, font=("Courier", 12))
+        self.lista_visual.pack(padx=10, pady=10)
+        self.lbl_tot = ctkinter.CTkLabel(self.frame_res, text="TOTAL: R$ 0.00", font=("Arial", 22, "bold"), text_color="#2ecc71")
+        self.lbl_tot.pack(pady=10)
+
+        ctkinter.CTkButton(self.frame_res, text="✅ LANÇAR NOVOS ITENS", fg_color="#27ae60", height=45, command=self.confirmar_pedido).pack(fill="x", padx=20, pady=5)
+        ctkinter.CTkButton(self.frame_res, text="🖨️ IMPRIMIR CONTA", fg_color="#7f8c8d", 
+                   command=self.imprimir_pre_conta).pack(fill="x", padx=20, pady=5)
+        ctkinter.CTkButton(self.frame_res, text="💰 FECHAR CONTA", fg_color="#2980b9", height=45, command=self.tela_fechamento_conta).pack(fill="x", padx=20, pady=5)
+
+        for n, s in obter_mesas():
+            cor = "#2ecc71" if s == 'Livre' else "#f1c40f" if s == 'Ocupada' else "#e74c3c"
+            ctkinter.CTkButton(self.frame_lat, text=f"MESA {n:02d}", fg_color=cor, command=lambda num=n: self.abrir_detalhes_mesa(num)).pack(pady=2, fill="x", padx=5)
+        
+        self.atualizar_visual_resumo()
+
+    def alterar_qtd(self, item, valor):
+        qtd = self.carrinho.get(item, 0) + valor
+        if qtd <= 0:
+            if item in self.carrinho: del self.carrinho[item]
+            self.labels_qtd[item].configure(text="0")
+        else:
+            self.carrinho[item] = qtd
+            self.labels_qtd[item].configure(text=str(qtd))
+        self.atualizar_visual_resumo()
+
+    def atualizar_visual_resumo(self):
+        self.lista_visual.delete("0.0", "end")
+        total = 0
+        if self.itens_ja_pedidos:
+            self.lista_visual.insert("end", ">>> NA CONTA <<<\n")
+            for i, q in self.itens_ja_pedidos.items():
+                sub = q * self.precos[i]
+                self.lista_visual.insert("end", f"{q}x {i:<15} R${sub:>6.2f}\n")
+                total += sub
+            self.lista_visual.insert("end", "-"*25 + "\n")
+        if self.carrinho:
+            self.lista_visual.insert("end", ">>> NOVOS <<<\n")
+            for i, q in self.carrinho.items():
+                sub = q * self.precos[i]
+                self.lista_visual.insert("end", f"{q}x {i:<15} R${sub:>6.2f}\n")
+                total += sub
+        self.lbl_tot.configure(text=f"TOTAL: R$ {total:.2f}")
+
+    def confirmar_pedido(self):
+        # 1. Se não clicou em nada e não mudou o nome, não faz nada
+        if not self.carrinho and not self.ent_nome.get(): 
+            return
+            
+        try:
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+            
+            # 2. Define o status (Se tem algo no banco ou algo novo no carrinho, está Ocupada)
+            status = 'Ocupada' if (self.carrinho or self.itens_ja_pedidos) else 'Livre'
+            
+            # 3. Atualiza os dados da mesa
+            cursor.execute("UPDATE mesas SET status=?, cliente_nome=?, cliente_contato=? WHERE numero=?", 
+                       (status, self.ent_nome.get(), self.ent_whats.get(), self.mesa_atual))
+            
+            # 4. Salva apenas os NOVOS itens no banco
+            for item, qtd in self.carrinho.items():
+                for _ in range(qtd):
+                    cursor.execute("INSERT INTO pedidos (id_mesa, item_nome, valor) VALUES (?, ?, ?)", 
+                                   (self.mesa_atual, item, self.precos[item]))
+            
+            conn.commit()
+            conn.close() # Fecha o banco antes de abrir a impressão
+            
+            # 5. CHAMA A IMPRESSÃO (A função vai filtrar se é comida ou não)
+            if self.carrinho:
+                self.imprimir_via_cozinha(self.carrinho)
+            
+            messagebox.showinfo("Sucesso", "Mesa Atualizada e Pedido Enviado!", parent=self)
+            self.mostrar_mapa_mesas() # Volta para o mapa de mesas
+            
+        except Exception as e:
+            messagebox.showerror("Erro Crítico", f"Erro ao salvar no banco: {e}", parent=self)
+
+    def tela_fechamento_conta(self):
+        for widget in self.frame_central.winfo_children(): widget.destroy()
+        
+        # Cálculo do total (Pedidos já salvos + Novos no carrinho)
+        self.total_conta = sum(q * self.precos[i] for i, q in self.itens_ja_pedidos.items()) + \
+                           sum(q * self.precos[i] for i, q in self.carrinho.items())
+        
+        self.pagamentos_lista = [] # Guarda tuplas (valor, forma)
+        self.saldo_restante = self.total_conta
+
+        ctkinter.CTkLabel(self.frame_central, text="💰 FINALIZAR CONTA", font=("Arial", 22, "bold")).pack(pady=15)
+        
+        # Painel de Saldo Dinâmico
+        self.f_saldo = ctkinter.CTkFrame(self.frame_central, fg_color="#2c3e50", height=100)
+        self.f_saldo.pack(fill="x", padx=40, pady=10)
+        
+        self.lbl_saldo_dinamico = ctkinter.CTkLabel(self.f_saldo, 
+            text=f"VALOR RESTANTE: R$ {self.saldo_restante:.2f}", 
+            font=("Arial", 26, "bold"), text_color="#f1c40f")
+        self.lbl_saldo_dinamico.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Seleção de Forma Única ou Múltipla
+        ctkinter.CTkLabel(self.frame_central, text="Escolha como o cliente vai pagar:", font=("Arial", 14)).pack(pady=5)
+        
+        self.forma_pag = ctkinter.CTkOptionMenu(self.frame_central, width=350, height=40,
+            values=["Dinheiro", "PIX", "Cartão Débito", "Cartão Crédito à Vista", "Múltiplas Formas"],
+            command=self.toggle_interface_pagamento)
+        self.forma_pag.pack(pady=10)
+
+        # Container para os campos de pagamento (Misto ou Único)
+        self.container_pagamento = ctkinter.CTkFrame(self.frame_central, fg_color="transparent")
+        self.container_pagamento.pack(fill="both", expand=True, padx=40)
+
+        # Botão Finalizar (Inicia desativado por segurança)
+        self.btn_finalizar = ctkinter.CTkButton(self.frame_central, text="FINALIZAR VENDA", 
+                                               fg_color="gray", height=55, width=350, 
+                                               font=("Arial", 18, "bold"), command=self.finalizar_venda)
+        self.btn_finalizar.pack(pady=20)
+
+    def toggle_interface_pagamento(self, escolha):
+        for w in self.container_pagamento.winfo_children(): w.destroy()
+        
+        if escolha == "Múltiplas Formas":
+            # Campos para adicionar valores parciais
+            f_add = ctkinter.CTkFrame(self.container_pagamento)
+            f_add.pack(fill="x", pady=10)
+            
+            self.ent_v_parcial = ctkinter.CTkEntry(f_add, placeholder_text="Valor R$", width=120)
+            self.ent_v_parcial.pack(side="left", padx=10, pady=10)
+            
+            self.f_m_parcial = ctkinter.CTkOptionMenu(f_add, values=["Dinheiro", "PIX", "Débito", "Crédito"], width=130)
+            self.f_m_parcial.pack(side="left", padx=5)
+            
+            ctkinter.CTkButton(f_add, text="ADICIONAR +", width=100, fg_color="#16a085", 
+                               command=self.adicionar_valor_misto).pack(side="left", padx=10)
+
+            # Lista onde os pagamentos vão aparecendo embaixo
+            self.scroll_pagos = ctkinter.CTkScrollableFrame(self.container_pagamento, height=200, label_text="Pagamentos Lançados")
+            self.scroll_pagos.pack(fill="both", expand=True, pady=5)
+            
+            self.btn_finalizar.configure(fg_color="gray", state="disabled") # Só libera quando saldo for 0
+        else:
+            ctkinter.CTkLabel(self.container_pagamento, text=f"O valor total de R$ {self.total_conta:.2f}\nserá quitado via {escolha}.", 
+                              font=("Arial", 14, "italic")).pack(pady=20)
+            self.btn_finalizar.configure(fg_color="#27ae60", state="normal")
+
+    def adicionar_valor_misto(self):
+        try:
+            valor = float(self.ent_v_parcial.get().replace(",", "."))
+            forma = self.f_m_parcial.get()
+            
+            if valor > (self.saldo_restante + 0.01):
+                messagebox.showwarning("Aviso", "Valor maior que o saldo restante!", parent=self)
+                return
+
+            self.pagamentos_lista.append((valor, forma))
+            self.saldo_restante -= valor
+            
+            # Atualiza visual do saldo
+            self.lbl_saldo_dinamico.configure(text=f"VALOR RESTANTE: R$ {self.saldo_restante:.2f}")
+            
+            # Adiciona linha visual na lista embaixo
+            f_item = ctkinter.CTkFrame(self.scroll_pagos, fg_color="transparent")
+            f_item.pack(fill="x", pady=2)
+            ctkinter.CTkLabel(f_item, text=f"✔ {forma}: R$ {valor:.2f}", font=("Arial", 13)).pack(side="left", padx=10)
+            
+            self.ent_v_parcial.delete(0, "end")
+
+            # Se saldo zerou, libera o botão
+            if self.saldo_restante < 0.05: # Tolerância de centavos
+                self.lbl_saldo_dinamico.configure(text="CONTA QUITADA!", text_color="#2ecc71")
+                self.btn_finalizar.configure(fg_color="#27ae60", state="normal")
+        
+        except ValueError:
+            messagebox.showerror("Erro", "Digite um valor numérico válido.", parent=self)
+
+    def finalizar_venda(self):
+        # 1. Identifica quais são os recebimentos
+        if self.forma_pag.get() == "Múltiplas Formas":
+            pago_agora = sum(v for v, f in self.pagamentos_lista)
+            # Verifica se realmente pagou tudo (tolerância de 5 centavos)
+            if pago_agora < (self.total_conta - 0.05):
+                messagebox.showwarning("Saldo Pendente", f"Ainda faltam R$ {self.total_conta - pago_agora:.2f}", parent=self)
+                return
+            recebimentos = self.pagamentos_lista
+        else:
+            # Pagamento único
+            recebimentos = [(self.total_conta, self.forma_pag.get())]
+
+        try:
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+            
+            # 2. Registra a Venda Geral
+            cursor.execute("INSERT INTO vendas (id_mesa, valor_total, forma_pagamento) VALUES (?, ?, ?)", 
+                           (self.mesa_atual, self.total_conta, self.forma_pag.get()))
+            id_venda = cursor.lastrowid
+            
+            # 3. Registra cada parte do pagamento (Importante para o financeiro!)
+            for valor, forma in recebimentos:
+                cursor.execute("INSERT INTO recebimentos (id_venda, valor, forma_pagamento) VALUES (?, ?, ?)", 
+                               (id_venda, valor, forma))
+            
+            # 4. Move itens da mesa para o HISTÓRICO (Para o Ranking funcionar)
+            cursor.execute("SELECT item_nome, valor FROM pedidos WHERE id_mesa=?", (self.mesa_atual,))
+            itens_mesa = cursor.fetchall()
+            for nome, preco in itens_mesa:
+                cursor.execute("INSERT INTO itens_vendidos_historico (id_venda, item_nome, valor) VALUES (?, ?, ?)", 
+                               (id_venda, nome, preco))
+
+            # 5. LIMPEZA TOTAL DA MESA (O que estava faltando!)
+            cursor.execute("UPDATE mesas SET status='Livre', cliente_nome='', cliente_contato='', observacao='' WHERE numero=?", (self.mesa_atual,))
+            cursor.execute("DELETE FROM pedidos WHERE id_mesa=?", (self.mesa_atual,))
+            
+            conn.commit() # Salva tudo no "caderno"
+            conn.close()
+            
+            messagebox.showinfo("Sucesso", f"Mesa {self.mesa_atual:02d} finalizada e liberada!", parent=self)
+            self.mostrar_mapa_mesas() # Volta para os quadradinhos verdes/amarelos
+            
+        except Exception as e:
+            messagebox.showerror("Erro Crítico", f"Não foi possível liberar a mesa: {e}", parent=self)
+
+    def formatar_nome_item(self, nome, largura_max=22):
+        """Função auxiliar para quebrar nomes longos sem perder informação"""
+        if len(nome) <= largura_max:
+            return nome
+        # Se for maior, ele apenas corta mas sem os pontinhos, 
+        # ou você pode optar por deixar o nome em duas linhas (mais complexo).
+        # Para 58mm, o ideal é abreviar palavras comuns ou permitir 2 linhas:
+        return nome[:largura_max]
+
+    def imprimir_via_cozinha(self, novos_itens):
+        categorias_cozinha = ["Lanches", "Blends"]
+        itens_para_imprimir = {i: q for i, q in novos_itens.items() if any(i in self.itens_por_categoria[cat] for cat in categorias_cozinha)}
+        if not itens_para_imprimir: return
+
+        data_h = datetime.now().strftime("%d/%m/%Y %H:%M")
+        # --- PADRÃO 80MM (48 CARACTERES) ---
+        txt =  "================================================\n"
+        txt += "               PEDIDO COZINHA                   \n"
+        txt += "================================================\n"
+        txt += f"MESA: {self.mesa_atual:02d} | DATA/HORA: {data_h}\n"
+        txt += "------------------------------------------------\n"
+        txt += f"{'QTD':<5} | {'ITEM':<40}\n"
+        txt += "------------------------------------------------\n"
+        
+        for item, qtd in itens_para_imprimir.items():
+            # Com 48 caracteres, quase nenhum item precisará de 2 linhas
+            txt += f"{qtd:>3}x   | {item.upper():<38}\n"
+        
+        txt += "------------------------------------------------\n"
+        txt += "           BOM TRABALHO, EQUIPE!                \n"
+        txt += "================================================\n\n\n\n\n"
+        
+        self.salvar_e_abrir_txt(f"cozinha_m{self.mesa_atual}.txt", txt)
+
+    def imprimir_pre_conta(self):
+        todos = {}
+        for i, q in self.itens_ja_pedidos.items(): todos[i] = todos.get(i, 0) + q
+        for i, q in self.carrinho.items(): todos[i] = todos.get(i, 0) + q
+        if not todos: return
+
+        data_h = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        # --- CABEÇALHO ---
+        txt =  "================================================"
+        txt += "\n             CONFERENCIA DE CONSUMO             "
+        txt += "\n================================================"
+        txt += f"\n MESA: {self.mesa_atual:02d} | CLIENTE: {self.ent_nome.get()[:20]:<20}"
+        txt += f"\n DATA: {data_h}"
+        txt += "\n------------------------------------------------"
+        # Cabeçalho da Tabela (QTD + UNIT + TOTAL)
+        txt += f"\n{'QTD':<6} {'VALOR UNIT.':>18} {'TOTAL':>19}"
+        txt += "\n------------------------------------------------"
+        
+        total_geral = 0
+        for item, qtd in todos.items():
+            prc = self.precos.get(item, 0)
+            sub = qtd * prc
+            total_geral += sub
+            
+            # LINHA 1: Quantidade e Valores alinhados nas pontas
+            # Ocupa 48 caracteres de largura
+            txt += f"\n{str(qtd)+'x':<6} {prc:>18.2f} {sub:>19.2f}"
+            
+            # LINHA 2: O Nome do Item logo abaixo (pode ser grande que não quebra as colunas)
+            txt += f"\n      {item.upper()}"
+            txt += "\n------------------------------------------------"
+        
+        txt += f"\n TOTAL A PAGAR:                      R${total_geral:>9.2f}"
+        txt += "\n------------------------------------------------"
+        txt += "\n          OBRIGADO PELA PREFERENCIA!            "
+        txt += "\n================================================\n\n\n\n\n"
+        
+        self.salvar_e_abrir_txt(f"conta_m{self.mesa_atual}.txt", txt)
+
+    def salvar_e_abrir_txt(self, nome, conteudo):
+        """Função auxiliar para salvar e abrir o arquivo"""
+        with open(nome, "w", encoding="utf-8") as f:
+            f.write(conteudo)
+        if os.name == 'nt': os.startfile(nome)
+        else: os.system(f"xdg-open {nome}")
+
+class JanelaFaturamento(ctkinter.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Relatórios e Performance")
+        self.geometry("1000x750")
+        
+        self.tabview = ctkinter.CTkTabview(self)
+        self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tabview.add("Diário")
+        self.tabview.add("Itens Vendidos")
+        
+        self.renderizar_diario()
+        self.renderizar_ranking()
+
+    def renderizar_diario(self):
+        tab = self.tabview.tab("Diário")
+        # CORREÇÃO ERRO 1: Limpa tudo antes de redesenhar
+        for w in tab.winfo_children(): w.destroy()
+
+        ctkinter.CTkLabel(tab, text="FATURAMENTO HOJE", font=("Arial", 20, "bold")).pack(pady=10)
+        
+        # Botão Excel
+        ctkinter.CTkButton(tab, text="📥 Gerar Planilha Excel", fg_color="#27ae60", 
+                           command=exportar_vendas_excel).pack(pady=10)
+
+        frame_cards = ctkinter.CTkFrame(tab, fg_color="transparent")
+        frame_cards.pack(pady=10)
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT forma_pagamento, SUM(valor) FROM recebimentos WHERE date(data_pagamento) = date('now') GROUP BY forma_pagamento")
+        dados = cursor.fetchall()
+        conn.close()
+
+        total = 0
+        for i, (forma, valor) in enumerate(dados):
+            card = ctkinter.CTkFrame(frame_cards, width=180, height=80, corner_radius=10)
+            card.grid(row=0, column=i, padx=10, pady=5)
+            ctkinter.CTkLabel(card, text=forma).pack()
+            ctkinter.CTkLabel(card, text=f"R$ {valor:.2f}", font=("Arial", 16, "bold")).pack()
+            total += valor
+        
+        ctkinter.CTkLabel(tab, text=f"TOTAL BRUTO: R$ {total:.2f}", font=("Arial", 24, "bold")).pack(pady=20)
+        ctkinter.CTkButton(tab, text="🔄 Atualizar", command=self.renderizar_diario).pack()
+
+    def renderizar_ranking(self):
+        tab = self.tabview.tab("Itens Vendidos")
+        for w in tab.winfo_children(): w.destroy()
+        
+        # CORREÇÃO ERRO 2: Ranking por Categoria
+        txt = ctkinter.CTkTextbox(tab, width=600, height=400, font=("Courier", 13))
+        txt.pack(pady=10)
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        # Aqui, no futuro, vamos cruzar com a tabela de cardápio para pegar a categoria real
+        cursor.execute("SELECT item_nome, COUNT(*) as qtd FROM itens_vendidos_historico GROUP BY item_nome ORDER BY qtd DESC")
+        
+        txt.insert("end", f"{'QTD':<5} | {'ITEM':<25}\n" + "-"*35 + "\n")
+        for nome, qtd in cursor.fetchall():
+            txt.insert("end", f"{qtd:>3}x   | {nome:<25}\n")
+        conn.close()
+
+    def obter_dados_hoje(self):
+        """Busca no banco o que entrou hoje por forma de pagamento"""
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        # Soma por forma de pagamento na tabela recebimentos (usando a data de hoje)
+        cursor.execute("""
+            SELECT forma_pagamento, SUM(valor) 
+            FROM recebimentos 
+            WHERE date(data_pagamento) = date('now', 'localtime')
+            GROUP BY forma_pagamento
+        """)
+        dados = cursor.fetchall()
+        conn.close()
+        return dados
+
+    def setup_aba_diario(self):
+        aba = self.tabview.tab("Faturamento Diário")
+        
+        for widget in aba.winfo_children():
+            widget.destroy()
+
+        ctkinter.CTkLabel(aba, text="RESUMO DE HOJE", font=("Arial", 20, "bold")).pack(pady=10)
+        
+        frame_cards = ctkinter.CTkFrame(aba, fg_color="transparent")
+        frame_cards.pack(fill="x", padx=10)
+
+        dados = self.obter_dados_hoje()
+        total_geral = 0
+        
+        # Criando "Cards" para cada tipo de entrada
+        for i, (forma, valor) in enumerate(dados):
+            card = ctkinter.CTkFrame(frame_cards, width=200, height=100, corner_radius=10)
+            card.grid(row=0, column=i, padx=10, pady=10)
+            ctkinter.CTkLabel(card, text=forma.upper(), font=("Arial", 12)).pack(pady=5)
+            ctkinter.CTkLabel(card, text=f"R$ {valor:.2f}", font=("Arial", 18, "bold"), text_color="#2ecc71").pack(pady=5)
+            total_geral += valor
+
+        # Totalizador no rodapé da aba
+        self.lbl_total_dia = ctkinter.CTkLabel(aba, text=f"FATURAMENTO BRUTO TOTAL: R$ {total_geral:.2f}", 
+                                               font=("Arial", 22, "bold"), text_color="#3498db")
+        self.lbl_total_dia.pack(pady=30)
+        
+        ctkinter.CTkButton(aba, text="🔄 Atualizar Dados", command=self.setup_aba_diario).pack()
+
+        ctkinter.CTkButton(aba, text="📥 Gerar Planilha Excel", fg_color="#27ae60", 
+                   command=self.exportar_para_excel).pack(pady=5)
+
+    def setup_aba_performance(self):
+        aba = self.tabview.tab("Performance (Semanal/Mensal)")
+        ctkinter.CTkLabel(aba, text="Relatórios de Período", font=("Arial", 18)).pack(pady=20)
+        # Aqui no futuro colocaremos a busca por data (Calendário)
+        ctkinter.CTkLabel(aba, text="[Em desenvolvimento: Filtros por Data]").pack()
+
+    def setup_aba_ranking(self):
+        aba = self.tabview.tab("Itens Mais Vendidos")
+        for widget in aba.winfo_children(): widget.destroy()
+
+        ctkinter.CTkLabel(aba, text="🏆 RANKING POR CATEGORIA", font=("Arial", 20, "bold")).pack(pady=10)
+        lista_rank = ctkinter.CTkTextbox(aba, width=550, height=400, font=("Courier", 13))
+        lista_rank.pack(pady=10)
+
+        # Categorias que já definimos no JanelaMesas
+        categorias = {
+            "LANCHES": ["FRT Classico", "FRT Bacon", "FRT Salada Especial"],
+            "BLENDS": ["Frango e Batata Especial", "Mega Blend"],
+            "BEBIDAS": ["Coca Cola lata", "Fanta Laranja lata", "Pepsi 2 Litros", "Suco de Laranja 2 Litros"]
+        }
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_nome, COUNT(item_nome) FROM itens_vendidos_historico GROUP BY item_nome ORDER BY COUNT(item_nome) DESC")
+        vendas = dict(cursor.fetchall())
+        conn.close()
+
+        for cat, itens in categorias.items():
+            lista_rank.insert("end", f"\n--- {cat} ---\n")
+            for item in itens:
+                qtd = vendas.get(item, 0)
+                lista_rank.insert("end", f"{qtd:>3}x | {item:<25}\n") 
+
+    def exportar_para_excel():
+        try:
+            conn = sqlite3.connect("lanchonete.db")
+            
+            # Lê as tabelas do banco de dados
+            df_vendas = pd.read_sql_query("SELECT * FROM vendas", conn)
+            df_itens = pd.read_sql_query("SELECT * FROM itens_vendidos_historico", conn)
+            
+            conn.close()
+
+            # Define o nome do arquivo com a data de hoje
+            data_hoje = datetime.now().strftime("%d-%m-%Y")
+            nome_arquivo = f"Relatorio_Vendas_{data_hoje}.xlsx"
+            
+            # Salva em Excel com duas abas diferentes
+            with pd.ExcelWriter(nome_arquivo) as writer:
+                df_vendas.to_excel(writer, sheet_name='Resumo_Vendas', index=False)
+                df_itens.to_excel(writer, sheet_name='Itens_Detalhado', index=False)
+                
+            messagebox.showinfo("Sucesso", f"Excel gerado com sucesso: {nome_arquivo}")
+        except Exception as e:
+            messagebox.showerror("Erro ao exportar", f"Erro: {e}")
+
+class JanelaTaxas(ctkinter.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Configuração de Taxas")
+        self.geometry("500x600")
+        self.after(100, self.grab_set)
+
+        ctkinter.CTkLabel(self, text="⚙️ TAXAS E COMISSÕES", font=("Arial", 20, "bold")).pack(pady=20)
+        
+        self.entries = {}
+        self.container = ctkinter.CTkFrame(self)
+        self.container.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Busca taxas do banco
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT nome_taxa, porcentagem FROM configuracoes_taxas")
+        for nome, valor in cursor.fetchall():
+            f = ctkinter.CTkFrame(self.container, fg_color="transparent")
+            f.pack(fill="x", pady=5)
+            ctkinter.CTkLabel(f, text=nome.replace("_", " "), width=150, anchor="w").pack(side="left")
+            ent = ctkinter.CTkEntry(f, width=80)
+            ent.insert(0, str(valor))
+            ent.pack(side="right")
+            self.entries[nome] = ent
+        conn.close()
+
+        ctkinter.CTkButton(self, text="SALVAR ALTERAÇÕES", fg_color="#27ae60", command=self.salvar_taxas).pack(pady=20)
+
+    def salvar_taxas(self):
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        for nome, ent in self.entries.items():
+            cursor.execute("UPDATE configuracoes_taxas SET porcentagem=? WHERE nome_taxa=?", (float(ent.get()), nome))
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Sucesso", "Taxas atualizadas!", parent=self)
+
+def realizar_backup_manual():
+    try:
+        # Cria a pasta de backups se não existir
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+
+        data_hora = datetime.now().strftime("%d-%m-%Y_%H-%M")
+        nome_arquivo = f"backups/backup_lanchonete_{data_hora}.db"
+        
+        # Copia o banco de dados atual para a pasta de backup
+        shutil.copy2("lanchonete.db", nome_arquivo)
+        
+        messagebox.showinfo("Backup", f"Cópia de segurança criada com sucesso!\nSalvo em: {nome_arquivo}")
+    except Exception as e:
+        messagebox.showerror("Erro no Backup", f"Não foi possível criar o backup: {e}")
+
+class AppPrincipal(ctkinter.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Sistema de Gestão Pro - Lanchonete")
+        self.geometry("700x600")
+
+        # Banner Principal
+        self.banner = ctkinter.CTkLabel(self, text="NOME DA LANCHONETE", font=("Arial", 26, "bold"), 
+                                        height=120, fg_color="#2c3e50", text_color="white", corner_radius=10)
+        self.banner.pack(pady=20, padx=20, fill="x")
+
+        # Container de Botões (Grid 2x3)
+        self.frame_btn = ctkinter.CTkFrame(self, fg_color="transparent")
+        self.frame_btn.pack(pady=10)
+
+        # Fileira 1
+        self.criar_botao("📦 Abrir Caixa / Mesas", self.abrir_mesas, 0, 0)
+        self.criar_botao("📊 Faturamento", self.abrir_faturamento, 0, 1)
+
+        # Fileira 2
+        self.criar_botao("🍔 Cardápio", self.abrir_cardapio, 1, 0)
+        self.criar_botao("⚙️ Taxas", self.abrir_taxas, 1, 1)
+
+        # Fileira 3
+        self.criar_botao("💾 Backup", self.abrir_backup, 2, 0)
+        self.criar_botao("❌ Sair", self.quit, 2, 1, cor="#c0392b")
+
+    def criar_botao(self, texto, comando, linha, coluna, cor=None):
+        btn = ctkinter.CTkButton(self.frame_btn, text=texto, width=280, height=60, 
+                                 font=("Arial", 15, "bold"), fg_color=cor, command=comando)
+        btn.grid(row=linha, column=coluna, padx=15, pady=15)
+
+    # Funções para chamar as janelas (vamos construir as outras telas agora)
+    def abrir_mesas(self):
+        JanelaMesas(self)
+
+    def abrir_faturamento(self):
+        JanelaFaturamento(self)
+
+    def abrir_cardapio(self):
+        messagebox.showinfo("Cardápio", "Tela de edição de itens em breve.", parent=self)
+
+    def abrir_taxas(self):
+        JanelaTaxas(self)
+
+    def abrir_backup(self):
+        realizar_backup_manual()
+
+if __name__ == "__main__":
+    # Garante que as tabelas existam ao iniciar
+    import database
+    database.criar_tabelas()
+    
+    app = AppPrincipal()
+    app.mainloop()

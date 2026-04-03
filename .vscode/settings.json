@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./CustomTkinter-master"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}
