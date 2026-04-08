@@ -1,4 +1,5 @@
 import customtkinter as ctkinter
+import customtkinter as ctk
 import os
 import sqlite3
 import pandas as pd
@@ -6,6 +7,23 @@ import shutil
 
 from tkinter import messagebox
 from datetime import datetime
+
+def obter_cardapio_completo():
+    conn = sqlite3.connect("lanchonete.db")
+    cursor = conn.cursor()
+    # Busca itens ordenados por categoria e nome
+    cursor.execute("SELECT nome, categoria, preco FROM cardapio ORDER BY categoria, nome")
+    dados = cursor.fetchall()
+    conn.close()
+    
+    # Organiza em um dicionário para o sistema entender
+    cardapio_organizado = {}
+    for nome, cat, preco in dados:
+        if cat not in cardapio_organizado:
+            cardapio_organizado[cat] = []
+        cardapio_organizado[cat].append({"nome": nome, "preco": preco})
+    
+    return cardapio_organizado
 
 def obter_mesas():
     conn = sqlite3.connect("lanchonete.db")
@@ -718,6 +736,179 @@ class JanelaTaxas(ctkinter.CTkToplevel):
         conn.close()
         messagebox.showinfo("Sucesso", "Taxas atualizadas!", parent=self)
 
+class JanelaCardapio(ctkinter.CTkToplevel):
+    def __init__(self, parent):
+            super().__init__(parent)
+            self.title("Gerenciar Cardápio")
+            self.geometry("700x700")
+            self.after(100, self.grab_set)
+
+            ctkinter.CTkLabel(self, text="🍔 GESTÃO DE CARDÁPIO", font=("Arial", 22, "bold")).pack(pady=15)
+
+            # Apenas este botão no topo:
+            self.btn_adicionar = ctk.CTkButton(self, text="➕ ADICIONAR NOVO ITEM", 
+                                            command=self.abrir_janela_item, 
+                                            fg_color="green", height=40)
+            self.btn_adicionar.pack(pady=10)
+
+            # Lista de Itens
+            self.scroll_itens = ctkinter.CTkScrollableFrame(self, label_text="Itens no Sistema")
+            self.scroll_itens.pack(fill="both", expand=True, padx=20, pady=10)
+            
+            self.renderizar_lista()
+
+    def renderizar_lista(self):
+            for w in self.scroll_itens.winfo_children(): w.destroy()
+            
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+            # Note que agora buscamos também os ingredientes
+            cursor.execute("SELECT id, nome, categoria, preco, ingredientes FROM cardapio ORDER BY categoria")
+            itens = cursor.fetchall()
+            conn.close()
+
+            for info in itens:
+                f = ctkinter.CTkFrame(self.scroll_itens, fg_color="transparent")
+                f.pack(fill="x", pady=5)
+
+                ctkinter.CTkLabel(f, text=f"{info[1]} ({info[2]}) - R$ {info[3]:.2f}", 
+                                font=("Arial", 13), width=350, anchor="w").pack(side="left", padx=10)
+                
+                ctkinter.CTkButton(f, text="🗑️", width=40, fg_color="#c0392b", 
+                                command=lambda i=info[0]: self.excluir_item(i)).pack(side="right", padx=5)
+                
+                # Aqui estava o erro! Agora chamamos abrir_janela_item passando os dados
+                ctkinter.CTkButton(f, text="📝", width=40, fg_color="#2980b9", 
+                                command=lambda d=info: self.abrir_janela_item(d)).pack(side="right", padx=5)
+
+    def abrir_janela_item(self, dados_item=None):
+        """
+        Esta função abre uma nova janela para ADICIONAR ou EDITAR.
+        Se 'dados_item' for passado, os campos vêm preenchidos para edição.
+        """
+        # Cria a janela pop-up
+        self.janela_form = ctk.CTkToplevel(self)
+        self.janela_form.title("Gestão de Item - Fritos")
+        self.janela_form.geometry("450x600")
+        self.janela_form.after(100, self.janela_form.grab_set) # Bloqueia a janela de trás até fechar esta
+
+        # --- CAMPOS DA JANELA ---
+        ctk.CTkLabel(self.janela_form, text="NOME DO ITEM", font=("Arial", 12, "bold")).pack(pady=(20, 0))
+        entry_nome = ctk.CTkEntry(self.janela_form, width=300)
+        entry_nome.pack(pady=5)
+
+        ctk.CTkLabel(self.janela_form, text="CATEGORIA", font=("Arial", 12, "bold")).pack(pady=(10, 0))
+        entry_cat = ctk.CTkEntry(self.janela_form, width=300)
+        entry_cat.pack(pady=5)
+
+        ctk.CTkLabel(self.janela_form, text="PREÇO (R$)", font=("Arial", 12, "bold")).pack(pady=(10, 0))
+        entry_preco = ctk.CTkEntry(self.janela_form, width=300)
+        entry_preco.pack(pady=5)
+
+        ctk.CTkLabel(self.janela_form, text="INGREDIENTES", font=("Arial", 12, "bold")).pack(pady=(10, 0))
+        txt_ingredientes = ctk.CTkTextbox(self.janela_form, width=300, height=100)
+        txt_ingredientes.pack(pady=5)
+
+        # Lógica para preencher se for EDIÇÃO
+        btn_texto = "SALVAR NOVO ITEM"
+        cor_btn = "#27ae60" # Verde
+        id_atual = None
+
+        if dados_item:
+            # Se 'dados_item' for uma lista/tupla vinda do banco ou da interface
+            # Exemplo: (id, nome, categoria, preco, ingredientes)
+            id_atual = dados_item[0]
+            entry_nome.insert(0, dados_item[1])
+            entry_cat.insert(0, dados_item[2])
+            entry_preco.insert(0, str(dados_item[3]))
+            if len(dados_item) > 4: # Se já tiver ingredientes salvos
+                txt_ingredientes.insert("0.0", dados_item[4])
+            
+            btn_texto = "ATUALIZAR ITEM"
+            cor_btn = "#2980b9" # Azul
+
+        # BOTÃO DE SALVAR (Agora dentro da função, resolvendo o AttributeError)
+        self.btn_salvar_acao = ctk.CTkButton(self.janela_form, text=btn_texto, fg_color=cor_btn,
+                                             command=lambda: self.processar_salvamento(
+                                                 id_atual, 
+                                                 entry_nome.get(), 
+                                                 entry_cat.get(), 
+                                                 entry_preco.get(), 
+                                                 txt_ingredientes.get("0.0", "end")
+                                             ))
+        self.btn_salvar_acao.pack(pady=30)
+
+    def processar_salvamento(self, id_item, nome, cat, preco, ingredientes):
+            try:
+                conn = sqlite3.connect("lanchonete.db")
+                cursor = conn.cursor()
+                
+                if id_item: # Se tem ID, é EDIÇÃO
+                    cursor.execute("""UPDATE cardapio 
+                                SET nome=?, categoria=?, preco=?, ingredientes=? 
+                                WHERE id=?""", (nome, cat, float(preco), ingredientes, id_item))
+                    msg = "Item atualizado!"
+                else: # Se não tem ID, é NOVO ITEM
+                    cursor.execute("""INSERT INTO cardapio (nome, categoria, preco, ingredientes) 
+                                VALUES (?, ?, ?, ?)""", (nome, cat, float(preco), ingredientes))
+                    msg = "Item adicionado!"
+
+                conn.commit()
+                conn.close()
+                
+                messagebox.showinfo("Sucesso", msg, parent=self.janela_form)
+                self.janela_form.destroy() # Fecha a janelinha
+                self.renderizar_lista()    # Atualiza a lista principal
+                
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao salvar: {e}", parent=self.janela_form)
+
+    def salvar_item(self):
+        nome = self.ent_nome.get()
+        preco = self.ent_preco.get().replace(",", ".")
+        cat = self.ent_cat.get()
+        
+        if not nome or not preco or not cat:
+            messagebox.showwarning("Aviso", "Preencha todos os campos!", parent=self)
+            return
+
+        try:
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+            
+            if self.id_editando:
+                # LÓGICA DE EDIÇÃO
+                cursor.execute("UPDATE cardapio SET nome=?, categoria=?, preco=? WHERE id=?", 
+                               (nome, cat, float(preco), self.id_editando))
+                self.id_editando = None # Reseta após editar
+                messagebox.showinfo("Sucesso", "Item atualizado!", parent=self)
+            else:
+                # LÓGICA DE NOVO CADASTRO
+                cursor.execute("INSERT INTO cardapio (nome, categoria, preco) VALUES (?, ?, ?)", 
+                               (nome, cat, float(preco)))
+                messagebox.showinfo("Sucesso", "Item adicionado!", parent=self)
+
+            conn.commit()
+            conn.close()
+            self.renderizar_lista()
+            
+            # Limpa campos
+            self.ent_nome.delete(0, "end")
+            self.ent_preco.delete(0, "end")
+            self.ent_cat.delete(0, "end")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro: {e}", parent=self) 
+
+    def excluir_item(self, id_item):
+        if messagebox.askyesno("Confirmar", "Deseja excluir este item do cardápio?", parent=self):
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM cardapio WHERE id=?", (id_item,))
+            conn.commit()
+            conn.close()
+            self.renderizar_lista()
+
 def realizar_backup_manual():
     try:
         # Cria a pasta de backups se não existir
@@ -774,8 +965,8 @@ class AppPrincipal(ctkinter.CTk):
         JanelaFaturamento(self)
 
     def abrir_cardapio(self):
-        messagebox.showinfo("Cardápio", "Tela de edição de itens em breve.", parent=self)
-
+        JanelaCardapio(self)
+        
     def abrir_taxas(self):
         JanelaTaxas(self)
 

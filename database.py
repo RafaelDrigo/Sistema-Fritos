@@ -49,6 +49,15 @@ def criar_tabelas():
         FOREIGN KEY (id_venda) REFERENCES vendas(id)
     )""")
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cardapio (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nome TEXT NOT NULL,
+        categoria TEXT NOT NULL,
+        preco REAL NOT NULL,
+        ingredientes TEXT
+    )""")
+
     # Inicializar as 30 mesas se o banco estiver vazio
     cursor.execute("SELECT COUNT(*) FROM mesas")
     if cursor.fetchone()[0] == 0:
