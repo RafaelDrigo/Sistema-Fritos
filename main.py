@@ -8,6 +8,8 @@ import shutil
 from tkinter import messagebox
 from datetime import datetime
 
+print("🚀 RODANDO ESSE MAIN AQUI 🚀")
+
 def obter_cardapio_completo():
     conn = sqlite3.connect("lanchonete.db")
     cursor = conn.cursor()
@@ -60,27 +62,19 @@ def exportar_vendas_excel():
     except Exception as e:
         messagebox.showerror("Erro", f"Erro ao gerar Excel: {e}")
 
+def atualizar_cardapio():
+    return obter_cardapio_completo()
+
 class JanelaMesas(ctkinter.CTkToplevel):
+
     def __init__(self, parent):
         super().__init__(parent)
+
         self.title("Gestão de Mesas")
         self.geometry("1300x850")
         self.after(100, self.grab_set) 
-
-        self.precos = {
-            "FRT Classico": 25.0, "FRT Bacon": 28.0, "FRT Salada Especial": 32.0,
-            "Frango e Batata Especial": 38.0, "Mega Blend": 48.0,
-            "Coca Cola lata": 6.50, "Fanta Laranja lata": 6.50, 
-            "Pepsi 2 Litros": 14.0, "Suco de Laranja 2 Litros": 16.0
-        }
         
-        self.categorias_ordem = ["Lanches", "Blends", "Bebidas"]
-        self.itens_por_categoria = {
-            "Lanches": ["FRT Classico", "FRT Bacon", "FRT Salada Especial"],
-            "Blends": ["Frango e Batata Especial", "Mega Blend"],
-            "Bebidas": ["Coca Cola lata", "Fanta Laranja lata", "Pepsi 2 Litros", "Suco de Laranja 2 Litros"]
-        }
-        
+        self.carregar_dados_dinamicos()
         self.carrinho = {} 
         self.itens_ja_pedidos = {}
         self.mesa_atual = None
@@ -90,6 +84,24 @@ class JanelaMesas(ctkinter.CTkToplevel):
         self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
         
         self.mostrar_mapa_mesas()
+
+    def carregar_dados_dinamicos(self):
+        """Busca o cardápio atualizado do Banco de Dados e monta as variáveis de sistema"""
+        dados_banco = obter_cardapio_completo() # Chama sua função que já existe lá no topo!
+        
+        self.categorias_ordem = list(dados_banco.keys())
+        self.itens_por_categoria = {}
+        self.precos = {}
+
+        for categoria, itens in dados_banco.items():
+            self.itens_por_categoria[categoria] = []
+            for item in itens:
+                nome_item = item["nome"]
+                preco_item = item["preco"]
+                
+                # Preenche as listas com os dados reais
+                self.itens_por_categoria[categoria].append(nome_item)
+                self.precos[nome_item] = preco_item
 
     def mostrar_mapa_mesas(self):
         for widget in self.main_container.winfo_children(): widget.destroy()
@@ -146,7 +158,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
                 f = ctkinter.CTkFrame(scroll_c, fg_color="transparent")
                 f.pack(fill="x", pady=2)
                 ctkinter.CTkLabel(f, text=f"{item} (R${preco:.2f})", width=200, anchor="w").pack(side="left", padx=10)
-                ctkinter.CTkButton(f, text="+", width=30, command=lambda i=item: self.alterar_qtd(i, 1)).pack(side="right", padx=2)
+                ctkinter.CTkButton(f, text="+", width=30, command=lambda i=item: self.abrir_pop_up_adicionais_por_nome(i)).pack(side="right", padx=2)
                 lbl_q = ctkinter.CTkLabel(f, text="0", width=30, font=("Arial", 12, "bold"))
                 lbl_q.pack(side="right", padx=5)
                 self.labels_qtd[item] = lbl_q
@@ -170,36 +182,58 @@ class JanelaMesas(ctkinter.CTkToplevel):
         
         self.atualizar_visual_resumo()
 
-    def alterar_qtd(self, item, valor):
-        qtd = self.carrinho.get(item, 0) + valor
-        if qtd <= 0:
-            if item in self.carrinho: del self.carrinho[item]
-            self.labels_qtd[item].configure(text="0")
+    def abrir_pop_up_adicionais_por_nome(self, item_nome):
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, preco FROM cardapio WHERE nome = ?", (item_nome,))
+        res = cursor.fetchone()
+        conn.close()
+
+        if res:
+            item_id, preco = res
+            self.abrir_pop_up_adicionais_mesas(item_id, item_nome, preco)
         else:
-            self.carrinho[item] = qtd
-            self.labels_qtd[item].configure(text=str(qtd))
-        self.atualizar_visual_resumo()
+            messagebox.showerror("Erro", "Item não encontrado no banco!")
+
+    def alterar_qtd(self, item, valor):
+            qtd = self.carrinho.get(item, 0) + valor
+            if qtd <= 0:
+                if item in self.carrinho: del self.carrinho[item]
+                if item in self.labels_qtd: self.labels_qtd[item].configure(text="0")
+            else:
+                self.carrinho[item] = qtd
+                if item in self.labels_qtd: self.labels_qtd[item].configure(text=str(qtd))
+            self.atualizar_visual_resumo()
 
     def atualizar_visual_resumo(self):
         self.lista_visual.delete("0.0", "end")
         total = 0
+        
+        # Itens que já estavam salvos na conta
         if self.itens_ja_pedidos:
             self.lista_visual.insert("end", ">>> NA CONTA <<<\n")
             for i, q in self.itens_ja_pedidos.items():
-                sub = q * self.precos[i]
+                # PROTEÇÃO: .get(i, 0) garante que se não achar o preço, ele assume 0 em vez de travar
+                preco = self.precos.get(i, 0)
+                sub = q * preco
                 self.lista_visual.insert("end", f"{q}x {i:<15} R${sub:>6.2f}\n")
                 total += sub
             self.lista_visual.insert("end", "-"*25 + "\n")
+            
+        # Novos itens no carrinho
         if self.carrinho:
             self.lista_visual.insert("end", ">>> NOVOS <<<\n")
             for i, q in self.carrinho.items():
-                sub = q * self.precos[i]
+                # PROTEÇÃO: .get(i, 0) evita o erro com a palavra 'Lanches'
+                preco = self.precos.get(i, 0)
+                sub = q * preco
                 self.lista_visual.insert("end", f"{q}x {i:<15} R${sub:>6.2f}\n")
                 total += sub
+                
         self.lbl_tot.configure(text=f"TOTAL: R$ {total:.2f}")
 
     def confirmar_pedido(self):
-        # 1. Se não clicou em nada e não mudou o nome, não faz nada
         if not self.carrinho and not self.ent_nome.get(): 
             return
             
@@ -207,38 +241,38 @@ class JanelaMesas(ctkinter.CTkToplevel):
             conn = sqlite3.connect("lanchonete.db")
             cursor = conn.cursor()
             
-            # 2. Define o status (Se tem algo no banco ou algo novo no carrinho, está Ocupada)
             status = 'Ocupada' if (self.carrinho or self.itens_ja_pedidos) else 'Livre'
             
-            # 3. Atualiza os dados da mesa
             cursor.execute("UPDATE mesas SET status=?, cliente_nome=?, cliente_contato=? WHERE numero=?", 
-                       (status, self.ent_nome.get(), self.ent_whats.get(), self.mesa_atual))
+                    (status, self.ent_nome.get(), self.ent_whats.get(), self.mesa_atual))
             
-            # 4. Salva apenas os NOVOS itens no banco
             for item, qtd in self.carrinho.items():
-                for _ in range(qtd):
-                    cursor.execute("INSERT INTO pedidos (id_mesa, item_nome, valor) VALUES (?, ?, ?)", 
-                                   (self.mesa_atual, item, self.precos[item]))
+                preco_item = self.precos.get(item)
+                
+                # SÓ SALVA NO BANCO SE O ITEM TIVER UM PREÇO (Isso ignora 'Lanches' ou categorias)
+                if preco_item is not None:
+                    for _ in range(qtd):
+                        cursor.execute("INSERT INTO pedidos (id_mesa, item_nome, valor) VALUES (?, ?, ?)", 
+                                    (self.mesa_atual, item, preco_item))
             
             conn.commit()
-            conn.close() # Fecha o banco antes de abrir a impressão
+            conn.close()
             
-            # 5. CHAMA A IMPRESSÃO (A função vai filtrar se é comida ou não)
             if self.carrinho:
                 self.imprimir_via_cozinha(self.carrinho)
             
-            messagebox.showinfo("Sucesso", "Mesa Atualizada e Pedido Enviado!", parent=self)
-            self.mostrar_mapa_mesas() # Volta para o mapa de mesas
+            messagebox.showinfo("Sucesso", "Mesa Atualizada!", parent=self)
+            self.mostrar_mapa_mesas()
             
         except Exception as e:
-            messagebox.showerror("Erro Crítico", f"Erro ao salvar no banco: {e}", parent=self)
+            messagebox.showerror("Erro Crítico", f"Erro ao salvar: {e}", parent=self)
 
     def tela_fechamento_conta(self):
         for widget in self.frame_central.winfo_children(): widget.destroy()
         
         # Cálculo do total (Pedidos já salvos + Novos no carrinho)
         self.total_conta = sum(q * self.precos[i] for i, q in self.itens_ja_pedidos.items()) + \
-                           sum(q * self.precos[i] for i, q in self.carrinho.items())
+                        sum(q * self.precos[i] for i, q in self.carrinho.items())
         
         self.pagamentos_lista = [] # Guarda tuplas (valor, forma)
         self.saldo_restante = self.total_conta
@@ -268,8 +302,8 @@ class JanelaMesas(ctkinter.CTkToplevel):
 
         # Botão Finalizar (Inicia desativado por segurança)
         self.btn_finalizar = ctkinter.CTkButton(self.frame_central, text="FINALIZAR VENDA", 
-                                               fg_color="gray", height=55, width=350, 
-                                               font=("Arial", 18, "bold"), command=self.finalizar_venda)
+                                            fg_color="gray", height=55, width=350, 
+                                            font=("Arial", 18, "bold"), command=self.finalizar_venda)
         self.btn_finalizar.pack(pady=20)
 
     def toggle_interface_pagamento(self, escolha):
@@ -287,7 +321,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
             self.f_m_parcial.pack(side="left", padx=5)
             
             ctkinter.CTkButton(f_add, text="ADICIONAR +", width=100, fg_color="#16a085", 
-                               command=self.adicionar_valor_misto).pack(side="left", padx=10)
+                            command=self.adicionar_valor_misto).pack(side="left", padx=10)
 
             # Lista onde os pagamentos vão aparecendo embaixo
             self.scroll_pagos = ctkinter.CTkScrollableFrame(self.container_pagamento, height=200, label_text="Pagamentos Lançados")
@@ -296,7 +330,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
             self.btn_finalizar.configure(fg_color="gray", state="disabled") # Só libera quando saldo for 0
         else:
             ctkinter.CTkLabel(self.container_pagamento, text=f"O valor total de R$ {self.total_conta:.2f}\nserá quitado via {escolha}.", 
-                              font=("Arial", 14, "italic")).pack(pady=20)
+                            font=("Arial", 14, "italic")).pack(pady=20)
             self.btn_finalizar.configure(fg_color="#27ae60", state="normal")
 
     def adicionar_valor_misto(self):
@@ -348,20 +382,20 @@ class JanelaMesas(ctkinter.CTkToplevel):
             
             # 2. Registra a Venda Geral
             cursor.execute("INSERT INTO vendas (id_mesa, valor_total, forma_pagamento) VALUES (?, ?, ?)", 
-                           (self.mesa_atual, self.total_conta, self.forma_pag.get()))
+                        (self.mesa_atual, self.total_conta, self.forma_pag.get()))
             id_venda = cursor.lastrowid
             
             # 3. Registra cada parte do pagamento (Importante para o financeiro!)
             for valor, forma in recebimentos:
                 cursor.execute("INSERT INTO recebimentos (id_venda, valor, forma_pagamento) VALUES (?, ?, ?)", 
-                               (id_venda, valor, forma))
+                            (id_venda, valor, forma))
             
             # 4. Move itens da mesa para o HISTÓRICO (Para o Ranking funcionar)
             cursor.execute("SELECT item_nome, valor FROM pedidos WHERE id_mesa=?", (self.mesa_atual,))
             itens_mesa = cursor.fetchall()
             for nome, preco in itens_mesa:
                 cursor.execute("INSERT INTO itens_vendidos_historico (id_venda, item_nome, valor) VALUES (?, ?, ?)", 
-                               (id_venda, nome, preco))
+                            (id_venda, nome, preco))
 
             # 5. LIMPEZA TOTAL DA MESA (O que estava faltando!)
             cursor.execute("UPDATE mesas SET status='Livre', cliente_nome='', cliente_contato='', observacao='' WHERE numero=?", (self.mesa_atual,))
@@ -386,12 +420,26 @@ class JanelaMesas(ctkinter.CTkToplevel):
         return nome[:largura_max]
 
     def imprimir_via_cozinha(self, novos_itens):
-        categorias_cozinha = ["Lanches", "Blends"]
-        itens_para_imprimir = {i: q for i, q in novos_itens.items() if any(i in self.itens_por_categoria[cat] for cat in categorias_cozinha)}
-        if not itens_para_imprimir: return
+        # 1. Pegamos todas as categorias que existem no seu banco de dados
+        # 2. Filtramos para REMOVER a categoria "Bebidas" (independente de maiúscula/minúscula)
+        categorias_cozinha = [
+            cat for cat in self.itens_por_categoria.keys() 
+            if cat.lower() != "bebidas"
+        ]
+        
+        # 3. Filtramos os itens que pertencem a essas categorias permitidas
+        itens_para_imprimir = {
+            item: qtd for item, qtd in novos_itens.items() 
+            if any(item in self.itens_por_categoria.get(cat, []) for cat in categorias_cozinha)
+        }
+        
+        # Se não houver nada para imprimir (ex: só pediram bebida), a função para aqui
+        if not itens_para_imprimir: 
+            return
 
         data_h = datetime.now().strftime("%d/%m/%Y %H:%M")
-        # --- PADRÃO 80MM (48 CARACTERES) ---
+        
+        # --- PADRÃO 80MM ---
         txt =  "================================================\n"
         txt += "               PEDIDO COZINHA                   \n"
         txt += "================================================\n"
@@ -401,7 +449,6 @@ class JanelaMesas(ctkinter.CTkToplevel):
         txt += "------------------------------------------------\n"
         
         for item, qtd in itens_para_imprimir.items():
-            # Com 48 caracteres, quase nenhum item precisará de 2 linhas
             txt += f"{qtd:>3}x   | {item.upper():<38}\n"
         
         txt += "------------------------------------------------\n"
@@ -409,6 +456,70 @@ class JanelaMesas(ctkinter.CTkToplevel):
         txt += "================================================\n\n\n\n\n"
         
         self.salvar_e_abrir_txt(f"cozinha_m{self.mesa_atual}.txt", txt)
+
+    def abrir_pop_up_adicionais_mesas(self, item_id, item_nome, item_preco):
+        """Abre a janela de adicionais antes de confirmar o item."""
+        pop_up = ctkinter.CTkToplevel(self)
+        pop_up.title(f"Adicionais: {item_nome}")
+        pop_up.geometry("400x600")
+        pop_up.transient(self)
+        pop_up.after(150, pop_up.grab_set)
+
+        ctkinter.CTkLabel(pop_up, text=f"Personalizar {item_nome}", font=("Arial", 16, "bold")).pack(pady=15)
+        
+        # Buscar ID do item no cardápio pelo nome para achar os adicionais vinculados
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM cardapio WHERE nome = ?", (item_nome,))
+        res = cursor.fetchone()
+        
+        lista_checkboxes = {}
+        adicionais_disponiveis = []
+
+        if res:
+            id_do_cardapio = res[0]
+            query = """
+                SELECT a.id, a.nome, a.preco 
+                FROM adicionais a
+                JOIN item_adicionais ia ON a.id = ia.id_adicional
+                WHERE ia.id_item = ?
+            """
+            cursor.execute(query, (id_do_cardapio,))
+            adicionais_disponiveis = cursor.fetchall()
+        conn.close()
+
+        if not adicionais_disponiveis:
+            ctkinter.CTkLabel(pop_up, text="Este item não possui adicionais específicos.").pack(pady=10)
+        else:
+            frame_lista = ctkinter.CTkScrollableFrame(pop_up, width=350, height=250)
+            frame_lista.pack(pady=10, padx=20)
+            for ad_id, ad_nome, ad_preco in adicionais_disponiveis:
+                var = ctkinter.BooleanVar(value=False)
+                cb = ctkinter.CTkCheckBox(frame_lista, text=f"{ad_nome} (+ R$ {ad_preco:.2f})", variable=var)
+                cb.pack(anchor="w", pady=5, padx=10)
+                lista_checkboxes[ad_id] = {"var": var, "nome": ad_nome, "preco": ad_preco}
+
+        ctkinter.CTkLabel(pop_up, text="Observações:").pack(pady=(10, 0))
+        entry_obs = ctkinter.CTkEntry(pop_up, width=300, placeholder_text="Sem cebola, mal passado...")
+        entry_obs.pack(pady=5)
+
+        def confirmar():
+            valor_total_item = item_preco
+            detalhes = []
+            for ad_id, info in lista_checkboxes.items():
+                if info["var"].get():
+                    valor_total_item += info["preco"]
+                    detalhes.append(info["nome"])
+            
+            obs = entry_obs.get().strip()
+            detalhes_str = f"Add: {', '.join(detalhes)}" if detalhes else ""
+            if obs: detalhes_str += f" | Obs: {obs}" if detalhes_str else f"Obs: {obs}"
+
+            # Agora sim, adiciona ao pedido usando o método que você já tem
+            self.adicionar_item_pedido(item_nome, valor_total_item, detalhes_str)
+            pop_up.destroy()
+
+        ctkinter.CTkButton(pop_up, text="✅ Confirmar", fg_color="green", command=confirmar).pack(pady=20)
 
     def imprimir_pre_conta(self):
         todos = {}
@@ -456,6 +567,19 @@ class JanelaMesas(ctkinter.CTkToplevel):
             f.write(conteudo)
         if os.name == 'nt': os.startfile(nome)
         else: os.system(f"xdg-open {nome}")
+
+    def adicionar_item_pedido(self, nome, valor, detalhes):
+        if nome not in self.carrinho:
+            self.carrinho[nome] = 0
+        
+        self.carrinho[nome] += 1
+
+        # Aqui você pode evoluir depois para salvar os detalhes separados
+        print(f"Item: {nome} | Valor: {valor} | Detalhes: {detalhes}")
+
+        self.atualizar_visual_resumo()
+    def confirmar_pedido(self):
+        print("🔥 FUNÇÃO NOVA RODANDO 🔥")
 
 class JanelaFaturamento(ctkinter.CTkToplevel):
     def __init__(self, parent):
@@ -747,15 +871,210 @@ class JanelaCardapio(ctkinter.CTkToplevel):
 
             # Apenas este botão no topo:
             self.btn_adicionar = ctk.CTkButton(self, text="➕ ADICIONAR NOVO ITEM", 
-                                            command=self.abrir_janela_item, 
+                                            command=self.abrir_form_novo_item, 
                                             fg_color="green", height=40)
             self.btn_adicionar.pack(pady=10)
+
+            # Botão para abrir o Gerenciador de Adicionais
+            ctkinter.CTkButton(self, text="🍔 Gerenciar Adicionais", 
+                           fg_color="#f39c12", hover_color="#f1c40f", font=("Arial", 14, "bold"),
+                           command=self.abrir_janela_adicionais).pack(pady=10)
 
             # Lista de Itens
             self.scroll_itens = ctkinter.CTkScrollableFrame(self, label_text="Itens no Sistema")
             self.scroll_itens.pack(fill="both", expand=True, padx=20, pady=10)
             
             self.renderizar_lista()
+    
+    def abrir_form_novo_item(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Novo Item")
+        popup.geometry("420x600")
+
+        frame_principal = ctk.CTkScrollableFrame(popup)
+        frame_principal.pack(fill="both", expand=True, padx=10, pady=10)
+
+        ctk.CTkLabel(frame_principal, text="Cadastrar Novo Produto", font=("Arial", 16, "bold")).pack(pady=10)
+
+        # Nome
+        ctk.CTkLabel(frame_principal, text="Nome do produto").pack(anchor="w", padx=20)
+        entry_nome = ctk.CTkEntry(frame_principal)
+        entry_nome.pack(fill="x", padx=20, pady=(0,10))
+
+        # Preço
+        ctk.CTkLabel(frame_principal, text="Preço (R$)").pack(anchor="w", padx=20)
+        entry_preco = ctk.CTkEntry(frame_principal)
+        entry_preco.pack(fill="x", padx=20, pady=(0,10))
+
+        # Categoria
+        ctk.CTkLabel(frame_principal, text="Categoria").pack(anchor="w", padx=20)
+        
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT DISTINCT categoria FROM cardapio")
+        categorias = [row[0] for row in cursor.fetchall()]
+
+        conn.close()    
+
+        combo_categoria = ctk.CTkOptionMenu(frame_principal, values=categorias)
+        combo_categoria.pack(fill="x", padx=20, pady=5)
+
+        entry_nova_categoria = ctk.CTkEntry(frame_principal, placeholder_text="Ou digite nova categoria")
+        entry_nova_categoria.pack(fill="x", padx=20, pady=(0,10))
+
+        # Adicionais (checkbox)
+        ctk.CTkLabel(frame_principal, text="Adicionais disponíveis").pack(pady=10)
+
+        frame_add = ctk.CTkFrame(frame_principal)
+        frame_add.pack(fill="x", padx=20, pady=5)
+
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nome FROM adicionais")
+        adicionais = cursor.fetchall()
+        conn.close()
+
+        vars_add = {}
+
+        for ad_id, ad_nome in adicionais:
+            var = ctk.BooleanVar()
+            cb = ctk.CTkCheckBox(frame_add, text=ad_nome, variable=var)
+            cb.pack(anchor="w")
+            vars_add[ad_id] = var
+
+        # SALVAR
+        def salvar():
+            nome = entry_nome.get().strip()
+            try:
+                preco = float(entry_preco.get().replace(",", "."))
+            except:
+                messagebox.showerror("Erro", "Preço inválido")
+                return
+
+            nova_cat = entry_nova_categoria.get().strip()
+            categoria = nova_cat if nova_cat else combo_categoria.get()
+
+            if not nome:
+                messagebox.showerror("Erro", "Nome obrigatório")
+                return
+
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+
+            # Salva produto
+            cursor.execute(
+                "INSERT INTO cardapio (nome, preco, categoria) VALUES (?, ?, ?)",
+                (nome, preco, categoria)
+            )
+            id_item = cursor.lastrowid
+
+            # Salva vínculos com adicionais
+            for ad_id, var in vars_add.items():
+                if var.get():
+                    cursor.execute(
+                        "INSERT INTO item_adicionais (id_item, id_adicional) VALUES (?, ?)",
+                        (id_item, ad_id)
+                    )
+
+            conn.commit()
+            conn.close()
+
+            messagebox.showinfo("Sucesso", "Produto cadastrado!")
+
+            
+            popup.destroy()
+
+        ctk.CTkButton(frame_principal, text="💾 SALVAR", fg_color="green", command=salvar).pack(pady=20)
+    def abrir_janela_adicionais(self):
+            janela_add = ctkinter.CTkToplevel(self)
+            janela_add.title("Gerenciar Adicionais")
+            janela_add.geometry("450x500")
+            janela_add.transient(self)
+            janela_add.after(150, janela_add.grab_set)
+
+            # --- Área de Cadastro ---
+            frame_top = ctkinter.CTkFrame(janela_add)
+            frame_top.pack(pady=15, padx=15, fill="x")
+
+            ctkinter.CTkLabel(frame_top, text="Novo Adicional (Ex: Bacon extra):", font=("Arial", 14, "bold")).pack(pady=(10, 5))
+            entry_nome = ctkinter.CTkEntry(frame_top, width=250, placeholder_text="Nome do adicional")
+            entry_nome.pack(pady=5)
+
+            ctkinter.CTkLabel(frame_top, text="Preço (R$):", font=("Arial", 14, "bold")).pack(pady=5)
+            entry_preco = ctkinter.CTkEntry(frame_top, width=150, placeholder_text="Ex: 3.50")
+            entry_preco.pack(pady=5)
+
+            def salvar_adicional():
+                nome = entry_nome.get().strip()
+                preco_str = entry_preco.get().replace(",", ".") # Aceita vírgula ou ponto
+                
+                if not nome or not preco_str:
+                    messagebox.showwarning("Aviso", "Preencha o nome e o preço!", parent=janela_add)
+                    return
+                
+                try:
+                    preco = float(preco_str)
+                    conn = sqlite3.connect("lanchonete.db")
+                    cursor = conn.cursor()
+                    cursor.execute("INSERT INTO adicionais (nome, preco) VALUES (?, ?)", (nome, preco))
+                    conn.commit()
+                    conn.close()
+                    
+                    entry_nome.delete(0, 'end')
+                    entry_preco.delete(0, 'end')
+                    entry_nome.focus()
+                    carregar_lista() # Atualiza a lista na hora
+                except ValueError:
+                    messagebox.showwarning("Erro", "Digite um valor numérico válido para o preço!", parent=janela_add)
+                except sqlite3.OperationalError:
+                    messagebox.showerror("Erro", "Tabela não encontrada. Você rodou o novo database.py?", parent=janela_add)
+
+            ctkinter.CTkButton(frame_top, text="➕ Salvar Adicional", fg_color="#27ae60", hover_color="#2ecc71", 
+                            command=salvar_adicional).pack(pady=15)
+
+            # --- Área da Lista de Adicionais Cadastrados ---
+            ctkinter.CTkLabel(janela_add, text="Adicionais Cadastrados:", font=("Arial", 14, "bold")).pack(pady=(10, 0))
+            frame_lista = ctkinter.CTkScrollableFrame(janela_add, width=400, height=200)
+            frame_lista.pack(pady=10, padx=15, fill="both", expand=True)
+
+            def deletar_adicional(id_add):
+                if messagebox.askyesno("Excluir", "Tem certeza que deseja apagar este adicional?", parent=janela_add):
+                    conn = sqlite3.connect("lanchonete.db")
+                    cursor = conn.cursor()
+                    # Deleta o adicional e as ligações dele com os lanches
+                    cursor.execute("DELETE FROM adicionais WHERE id = ?", (id_add,))
+                    cursor.execute("DELETE FROM item_adicionais WHERE id_adicional = ?", (id_add,))
+                    conn.commit()
+                    conn.close()
+                    carregar_lista()
+
+            def carregar_lista():
+                # Limpa a tela antes de atualizar
+                for widget in frame_lista.winfo_children():
+                    widget.destroy()
+                
+                try:
+                    conn = sqlite3.connect("lanchonete.db")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, nome, preco FROM adicionais ORDER BY nome")
+                    adicionais = cursor.fetchall()
+                    conn.close()
+
+                    for ad_id, ad_nome, ad_preco in adicionais:
+                        linha = ctkinter.CTkFrame(frame_lista, fg_color="transparent")
+                        linha.pack(fill="x", pady=2)
+                        
+                        texto = f"{ad_nome} - R$ {ad_preco:.2f}"
+                        ctkinter.CTkLabel(linha, text=texto, font=("Arial", 13)).pack(side="left", padx=10)
+                        
+                        ctkinter.CTkButton(linha, text="❌", width=30, height=25, fg_color="#c0392b", hover_color="#e74c3c",
+                                        command=lambda id_add=ad_id: deletar_adicional(id_add)).pack(side="right", padx=10)
+                except sqlite3.OperationalError:
+                    ctkinter.CTkLabel(frame_lista, text="Erro ao carregar banco de dados.", text_color="red").pack()
+
+            # Carrega a lista ao abrir a janela
+            carregar_lista()
 
     def renderizar_lista(self):
             for w in self.scroll_itens.winfo_children(): w.destroy()
@@ -782,61 +1101,179 @@ class JanelaCardapio(ctkinter.CTkToplevel):
                                 command=lambda d=info: self.abrir_janela_item(d)).pack(side="right", padx=5)
 
     def abrir_janela_item(self, dados_item=None):
-        """
-        Esta função abre uma nova janela para ADICIONAR ou EDITAR.
-        Se 'dados_item' for passado, os campos vêm preenchidos para edição.
-        """
-        # Cria a janela pop-up
-        self.janela_form = ctk.CTkToplevel(self)
-        self.janela_form.title("Gestão de Item - Fritos")
-        self.janela_form.geometry("450x600")
-        self.janela_form.after(100, self.janela_form.grab_set) # Bloqueia a janela de trás até fechar esta
+        janela_item = ctkinter.CTkToplevel(self)
+        janela_item.title("Cadastrar/Editar Item")
+        janela_item.geometry("500x750") # Aumentei a altura para caber os adicionais
+        janela_item.transient(self)
+        janela_item.after(150, janela_item.grab_set)
 
-        # --- CAMPOS DA JANELA ---
-        ctk.CTkLabel(self.janela_form, text="NOME DO ITEM", font=("Arial", 12, "bold")).pack(pady=(20, 0))
-        entry_nome = ctk.CTkEntry(self.janela_form, width=300)
+        # Campos de texto
+        ctkinter.CTkLabel(janela_item, text="Nome do Item:").pack(pady=(10, 0))
+        entry_nome = ctkinter.CTkEntry(janela_item, width=300)
         entry_nome.pack(pady=5)
 
-        ctk.CTkLabel(self.janela_form, text="CATEGORIA", font=("Arial", 12, "bold")).pack(pady=(10, 0))
-        entry_cat = ctk.CTkEntry(self.janela_form, width=300)
+        ctkinter.CTkLabel(janela_item, text="Categoria:").pack(pady=5)
+        entry_cat = ctkinter.CTkEntry(janela_item, width=300)
         entry_cat.pack(pady=5)
 
-        ctk.CTkLabel(self.janela_form, text="PREÇO (R$)", font=("Arial", 12, "bold")).pack(pady=(10, 0))
-        entry_preco = ctk.CTkEntry(self.janela_form, width=300)
+        ctkinter.CTkLabel(janela_item, text="Preço:").pack(pady=5)
+        entry_preco = ctkinter.CTkEntry(janela_item, width=300)
         entry_preco.pack(pady=5)
 
-        ctk.CTkLabel(self.janela_form, text="INGREDIENTES", font=("Arial", 12, "bold")).pack(pady=(10, 0))
-        txt_ingredientes = ctk.CTkTextbox(self.janela_form, width=300, height=100)
-        txt_ingredientes.pack(pady=5)
+        ctkinter.CTkLabel(janela_item, text="Ingredientes:").pack(pady=5)
+        entry_ingred = ctkinter.CTkEntry(janela_item, width=300)
+        entry_ingred.pack(pady=5)
 
-        # Lógica para preencher se for EDIÇÃO
-        btn_texto = "SALVAR NOVO ITEM"
-        cor_btn = "#27ae60" # Verde
-        id_atual = None
+        # --- SEÇÃO DE ADICIONAIS DISPONÍVEIS ---
+        ctkinter.CTkLabel(janela_item, text="Selecione os Adicionais Disponíveis:", font=("Arial", 12, "bold")).pack(pady=(15, 5))
+        
+        frame_checks = ctkinter.CTkScrollableFrame(janela_item, width=350, height=200)
+        frame_checks.pack(pady=5, padx=20)
+
+        # Carregar todos os adicionais do banco
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nome FROM adicionais ORDER BY nome")
+        todos_adicionais = cursor.fetchall()
+        
+        # Se for edição, carregar quais já estão marcados
+        adicionais_marcados = []
+        if dados_item:
+            cursor.execute("SELECT id_adicional FROM item_adicionais WHERE id_item = ?", (dados_item[0],))
+            adicionais_marcados = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        lista_checkboxes = {} # Para guardar as variáveis e saber o que foi marcado
+
+        for id_ad, nome_ad in todos_adicionais:
+            var = ctkinter.BooleanVar(value=(id_ad in adicionais_marcados))
+            cb = ctkinter.CTkCheckBox(frame_checks, text=nome_ad, variable=var)
+            cb.pack(anchor="w", pady=2, padx=10)
+            lista_checkboxes[id_ad] = var
 
         if dados_item:
-            # Se 'dados_item' for uma lista/tupla vinda do banco ou da interface
-            # Exemplo: (id, nome, categoria, preco, ingredientes)
-            id_atual = dados_item[0]
             entry_nome.insert(0, dados_item[1])
             entry_cat.insert(0, dados_item[2])
             entry_preco.insert(0, str(dados_item[3]))
-            if len(dados_item) > 4: # Se já tiver ingredientes salvos
-                txt_ingredientes.insert("0.0", dados_item[4])
-            
-            btn_texto = "ATUALIZAR ITEM"
-            cor_btn = "#2980b9" # Azul
+            entry_ingred.insert(0, dados_item[4] if dados_item[4] else "")
 
-        # BOTÃO DE SALVAR (Agora dentro da função, resolvendo o AttributeError)
-        self.btn_salvar_acao = ctk.CTkButton(self.janela_form, text=btn_texto, fg_color=cor_btn,
-                                             command=lambda: self.processar_salvamento(
-                                                 id_atual, 
-                                                 entry_nome.get(), 
-                                                 entry_cat.get(), 
-                                                 entry_preco.get(), 
-                                                 txt_ingredientes.get("0.0", "end")
-                                             ))
-        self.btn_salvar_acao.pack(pady=30)
+        def salvar():
+            nome = entry_nome.get()
+            cat = entry_cat.get()
+            preco = entry_preco.get()
+            ingred = entry_ingred.get()
+
+            if not nome or not cat or not preco:
+                messagebox.showwarning("Aviso", "Preencha os campos obrigatórios!")
+                return
+
+            conn = sqlite3.connect("lanchonete.db")
+            cursor = conn.cursor()
+
+            if dados_item: # EDITAR
+                id_item = dados_item[0]
+                cursor.execute("UPDATE cardapio SET nome=?, categoria=?, preco=?, ingredientes=? WHERE id=?",
+                            (nome, cat, float(preco), ingred, id_item))
+                # Limpa os adicionais antigos para inserir os novos marcados
+                cursor.execute("DELETE FROM item_adicionais WHERE id_item = ?", (id_item,))
+            else: # NOVO
+                cursor.execute("INSERT INTO cardapio (nome, categoria, preco, ingredientes) VALUES (?, ?, ?, ?)",
+                            (nome, cat, float(preco), ingred))
+                id_item = cursor.lastrowid
+
+            # Salva os novos adicionais selecionados
+            for id_ad, var in lista_checkboxes.items():
+                if var.get():
+                    cursor.execute("INSERT INTO item_adicionais (id_item, id_adicional) VALUES (?, ?)", (id_item, id_ad))
+
+            conn.commit()
+            conn.close()
+            self.renderizar_lista()
+            janela_item.destroy()
+
+        ctkinter.CTkButton(janela_item, text="Confirmar", command=salvar, fg_color="green").pack(pady=20)
+
+    def abrir_pop_up_adicionais(self, item_id, item_nome, item_preco, id_mesa, callback_atualizar):
+        """
+        Abre uma janela para selecionar os adicionais antes de confirmar o item na mesa.
+        """
+        pop_up = ctkinter.CTkToplevel(self)
+        pop_up.title(f"Adicionais: {item_nome}")
+        pop_up.geometry("400x550")
+        pop_up.transient(self)
+        pop_up.after(150, pop_up.grab_set)
+
+        ctkinter.CTkLabel(pop_up, text=f"Personalizar {item_nome}", font=("Arial", 16, "bold")).pack(pady=15)
+        
+        # --- BUSCAR ADICIONAIS VINCULADOS ---
+        conn = sqlite3.connect("lanchonete.db")
+        cursor = conn.cursor()
+        query = """
+            SELECT a.id, a.nome, a.preco 
+            FROM adicionais a
+            JOIN item_adicionais ia ON a.id = ia.id_adicional
+            WHERE ia.id_item = ?
+        """
+        cursor.execute(query, (item_id,))
+        adicionais_disponiveis = cursor.fetchall()
+        conn.close()
+
+        lista_checkboxes = {}
+
+        if not adicionais_disponiveis:
+            ctkinter.CTkLabel(pop_up, text="Nenhum adicional disponível para este item.").pack(pady=20)
+        else:
+            frame_lista = ctkinter.CTkScrollableFrame(pop_up, width=350, height=300)
+            frame_lista.pack(pady=10, padx=20)
+
+            for ad_id, ad_nome, ad_preco in adicionais_disponiveis:
+                var = ctkinter.BooleanVar(value=False)
+                cb = ctkinter.CTkCheckBox(frame_lista, text=f"{ad_nome} (+ R$ {ad_preco:.2f})", variable=var)
+                cb.pack(anchor="w", pady=5, padx=10)
+                lista_checkboxes[ad_id] = {"var": var, "nome": ad_nome, "preco": ad_preco}
+
+        # --- OBSERVAÇÃO ---
+        ctkinter.CTkLabel(pop_up, text="Observações (Ex: Sem cebola):").pack(pady=(10, 0))
+        entry_obs = ctkinter.CTkEntry(pop_up, width=300, placeholder_text="Remover ingredientes, ponto da carne...")
+        entry_obs.pack(pady=5)
+
+        def confirmar_item():
+            preco_final = item_preco
+            detalhes_lista = []
+            
+            # Soma os adicionais marcados
+            for ad_id, info in lista_checkboxes.items():
+                if info["var"].get():
+                    preco_final += info["preco"]
+                    detalhes_lista.append(info["nome"])
+            
+            obs = entry_obs.get().strip()
+            # Monta a string de detalhes: "Adicionais: Bacon, Ovo | Obs: Sem sal"
+            detalhes_str = ""
+            if detalhes_lista:
+                detalhes_str += "Adicionais: " + ", ".join(detalhes_lista)
+            if obs:
+                detalhes_str += f" | Obs: {obs}" if detalhes_str else f"Obs: {obs}"
+
+            # SALVAR NO BANCO DE DADOS (Tabela pedidos)
+            try:
+                conn = sqlite3.connect("lanchonete.db")
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO pedidos (id_mesa, item_nome, valor, detalhes, status_pedido) 
+                    VALUES (?, ?, ?, ?, ?)
+                """, (id_mesa, item_nome, preco_final, detalhes_str, 'Pendente'))
+                conn.commit()
+                conn.close()
+                
+                messagebox.showinfo("Sucesso", f"{item_nome} adicionado!", parent=pop_up)
+                callback_atualizar() # Atualiza a lista da mesa
+                pop_up.destroy()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao salvar: {e}")
+
+        ctkinter.CTkButton(pop_up, text="✅ Confirmar e Adicionar", fg_color="green", 
+                        command=confirmar_item).pack(pady=20)
 
     def processar_salvamento(self, id_item, nome, cat, preco, ingredientes):
             try:
@@ -879,13 +1316,13 @@ class JanelaCardapio(ctkinter.CTkToplevel):
             if self.id_editando:
                 # LÓGICA DE EDIÇÃO
                 cursor.execute("UPDATE cardapio SET nome=?, categoria=?, preco=? WHERE id=?", 
-                               (nome, cat, float(preco), self.id_editando))
+                            (nome, cat, float(preco), self.id_editando))
                 self.id_editando = None # Reseta após editar
                 messagebox.showinfo("Sucesso", "Item atualizado!", parent=self)
             else:
                 # LÓGICA DE NOVO CADASTRO
                 cursor.execute("INSERT INTO cardapio (nome, categoria, preco) VALUES (?, ?, ?)", 
-                               (nome, cat, float(preco)))
+                            (nome, cat, float(preco)))
                 messagebox.showinfo("Sucesso", "Item adicionado!", parent=self)
 
             conn.commit()
@@ -908,7 +1345,7 @@ class JanelaCardapio(ctkinter.CTkToplevel):
             conn.commit()
             conn.close()
             self.renderizar_lista()
-
+    
 def realizar_backup_manual():
     try:
         # Cria a pasta de backups se não existir
@@ -932,7 +1369,7 @@ class AppPrincipal(ctkinter.CTk):
         self.geometry("700x600")
 
         # Banner Principal
-        self.banner = ctkinter.CTkLabel(self, text="NOME DA LANCHONETE", font=("Arial", 26, "bold"), 
+        self.banner = ctkinter.CTkLabel(self, text="FRITOS", font=("Arial", 26, "bold"), 
                                         height=120, fg_color="#2c3e50", text_color="white", corner_radius=10)
         self.banner.pack(pady=20, padx=20, fill="x")
 
@@ -966,7 +1403,7 @@ class AppPrincipal(ctkinter.CTk):
 
     def abrir_cardapio(self):
         JanelaCardapio(self)
-        
+
     def abrir_taxas(self):
         JanelaTaxas(self)
 
