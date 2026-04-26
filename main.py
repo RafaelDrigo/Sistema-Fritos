@@ -75,7 +75,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
         self.after(100, self.grab_set) 
         
         self.carregar_dados_dinamicos()
-        self.carrinho = {} 
+        self.carrinho = [] 
         self.itens_ja_pedidos = {}
         self.mesa_atual = None
         self.labels_qtd = {} 
@@ -105,7 +105,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
 
     def mostrar_mapa_mesas(self):
         for widget in self.main_container.winfo_children(): widget.destroy()
-        self.carrinho = {}
+        self.carrinho = []
         ctkinter.CTkLabel(self.main_container, text="📍 MAPA DE MESAS", font=("Arial", 24, "bold")).pack(pady=10)
         grid_frame = ctkinter.CTkScrollableFrame(self.main_container, fg_color="transparent")
         grid_frame.pack(fill="both", expand=True)
@@ -119,7 +119,7 @@ class JanelaMesas(ctkinter.CTkToplevel):
 
     def abrir_detalhes_mesa(self, num_mesa):
         self.mesa_atual = num_mesa
-        self.carrinho = {}
+        self.carrinho = []
         self.itens_ja_pedidos = {}
         self.labels_qtd = {}
         for widget in self.main_container.winfo_children(): widget.destroy()
@@ -159,10 +159,10 @@ class JanelaMesas(ctkinter.CTkToplevel):
                 f.pack(fill="x", pady=2)
                 ctkinter.CTkLabel(f, text=f"{item} (R${preco:.2f})", width=200, anchor="w").pack(side="left", padx=10)
                 ctkinter.CTkButton(f, text="+", width=30, command=lambda i=item: self.abrir_pop_up_adicionais_por_nome(i)).pack(side="right", padx=2)
-                lbl_q = ctkinter.CTkLabel(f, text="0", width=30, font=("Arial", 12, "bold"))
-                lbl_q.pack(side="right", padx=5)
-                self.labels_qtd[item] = lbl_q
-                ctkinter.CTkButton(f, text="-", width=30, command=lambda i=item: self.alterar_qtd(i, -1)).pack(side="right", padx=2)
+                #lbl_q = ctkinter.CTkLabel(f, text="0", width=30, font=("Arial", 12, "bold"))
+                #lbl_q.pack(side="right", padx=5)
+                #self.labels_qtd[item] = lbl_q
+                #ctkinter.CTkButton(f, text="-", width=30, command=lambda i=item: self.alterar_qtd(i, -1)).pack(side="right", padx=2)
 
         self.frame_res = ctkinter.CTkFrame(self.main_container, width=300)
         self.frame_res.pack(side="right", fill="both", padx=5)
@@ -196,15 +196,15 @@ class JanelaMesas(ctkinter.CTkToplevel):
         else:
             messagebox.showerror("Erro", "Item não encontrado no banco!")
 
-    def alterar_qtd(self, item, valor):
-            qtd = self.carrinho.get(item, 0) + valor
-            if qtd <= 0:
-                if item in self.carrinho: del self.carrinho[item]
-                if item in self.labels_qtd: self.labels_qtd[item].configure(text="0")
-            else:
-                self.carrinho[item] = qtd
-                if item in self.labels_qtd: self.labels_qtd[item].configure(text=str(qtd))
-            self.atualizar_visual_resumo()
+   # def alterar_qtd(self, item, valor):
+   #         qtd = self.carrinho.get(item, 0) + valor
+   #         if qtd <= 0:
+   #             if item in self.carrinho: del self.carrinho[item]
+   #             if item in self.labels_qtd: self.labels_qtd[item].configure(text="0")
+   #         else:
+   #             self.carrinho[item] = qtd
+   #             if item in self.labels_qtd: self.labels_qtd[item].configure(text=str(qtd))
+   #         self.atualizar_visual_resumo()
 
     def atualizar_visual_resumo(self):
         self.lista_visual.delete("0.0", "end")
@@ -224,12 +224,17 @@ class JanelaMesas(ctkinter.CTkToplevel):
         # Novos itens no carrinho
         if self.carrinho:
             self.lista_visual.insert("end", ">>> NOVOS <<<\n")
-            for i, q in self.carrinho.items():
-                # PROTEÇÃO: .get(i, 0) evita o erro com a palavra 'Lanches'
-                preco = self.precos.get(i, 0)
-                sub = q * preco
-                self.lista_visual.insert("end", f"{q}x {i:<15} R${sub:>6.2f}\n")
-                total += sub
+            for item in self.carrinho:
+                texto = f"{item['nome']} - R${item['preco']:.2f}\n"
+
+                if item["adicionais"]:
+                    texto += f"  + {', '.join(item['adicionais'])}\n"
+
+                if item["obs"]:
+                    texto += f"  Obs: {item['obs']}\n"
+
+                self.lista_visual.insert("end", texto + "\n")
+                total += item["preco"]
                 
         self.lbl_tot.configure(text=f"TOTAL: R$ {total:.2f}")
 
@@ -569,15 +574,24 @@ class JanelaMesas(ctkinter.CTkToplevel):
         else: os.system(f"xdg-open {nome}")
 
     def adicionar_item_pedido(self, nome, valor, detalhes):
-        if nome not in self.carrinho:
-            self.carrinho[nome] = 0
-        
-        self.carrinho[nome] += 1
+        adicionais = []
+        obs = ""
 
-        # Aqui você pode evoluir depois para salvar os detalhes separados
-        print(f"Item: {nome} | Valor: {valor} | Detalhes: {detalhes}")
+        if "Add:" in detalhes:
+            adicionais = detalhes.split("Add: ")[1].split(" |")[0].split(", ")
+
+        if "Obs:" in detalhes:
+            obs = detalhes.split("Obs: ")[1]
+
+        self.carrinho.append({
+            "nome": nome,
+            "preco": valor,
+            "adicionais": adicionais,
+            "obs": obs
+        })
 
         self.atualizar_visual_resumo()
+
     def confirmar_pedido(self):
         print("🔥 FUNÇÃO NOVA RODANDO 🔥")
 
